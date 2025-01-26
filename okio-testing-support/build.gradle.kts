@@ -4,31 +4,8 @@ plugins {
 }
 
 kotlin {
-  jvm {
-  }
-  if (kmpJsEnabled) {
-    js {
-      compilations.all {
-        kotlinOptions {
-          moduleKind = "umd"
-          sourceMap = true
-          metaInfo = true
-        }
-      }
-      nodejs {
-        testTask {
-          useMocha {
-            timeout = "30s"
-          }
-        }
-      }
-      browser {
-      }
-    }
-  }
-  if (kmpNativeEnabled) {
-    configureOrCreateNativePlatforms()
-  }
+  configureOrCreateOkioPlatforms()
+
   sourceSets {
     all {
       languageSettings.apply {
@@ -36,15 +13,34 @@ kotlin {
       }
     }
 
-    commonMain {
+    val commonMain by getting {
       dependencies {
-        api(libs.kotlin.time)
         api(projects.okio)
         api(libs.kotlin.test)
+      }
+    }
+
+    val nonWasmMain by creating {
+      dependsOn(commonMain)
+      dependencies {
+        api(libs.kotlin.time)
         implementation(projects.okioFakefilesystem)
       }
     }
-    getByName("jvmMain") {
+
+    val zlibMain by creating {
+      dependsOn(commonMain)
+    }
+
+    if (kmpJsEnabled) {
+      val jsMain by getting {
+        dependsOn(nonWasmMain)
+      }
+    }
+
+    val jvmMain by getting {
+      dependsOn(nonWasmMain)
+      dependsOn(zlibMain)
       dependencies {
         // On the JVM the kotlin-test library resolves to one of three implementations based on
         // which testing framework is in use. JUnit is used downstream, but Gradle can't know that
@@ -52,8 +48,20 @@ kotlin {
         api(libs.kotlin.test.junit)
       }
     }
+
     if (kmpNativeEnabled) {
       createSourceSet("nativeMain", children = nativeTargets)
+        .also { nativeMain ->
+          nativeMain.dependsOn(nonWasmMain)
+          nativeMain.dependsOn(zlibMain)
+        }
+    }
+
+    if (kmpWasmEnabled) {
+      createSourceSet("wasmMain", children = wasmTargets)
+        .also { wasmMain ->
+          wasmMain.dependsOn(commonMain)
+        }
     }
   }
 }

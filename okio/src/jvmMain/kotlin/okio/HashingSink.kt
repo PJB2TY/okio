@@ -28,7 +28,8 @@ import javax.crypto.spec.SecretKeySpec
  *
  * In this example we use `HashingSink` with a [BufferedSink] to make writing to the
  * sink easier.
- * ```
+ *
+ * ```java
  * HashingSink hashingSink = HashingSink.sha256(s);
  * BufferedSink bufferedSink = Okio.buffer(hashingSink);
  *
@@ -61,11 +62,11 @@ actual class HashingSink : ForwardingSink, Sink { // Need to explicitly declare 
       }
     } catch (e: InvalidKeyException) {
       throw IllegalArgumentException(e)
-    }
+    },
   )
 
   @Throws(IOException::class)
-  override fun write(source: Buffer, byteCount: Long) {
+  actual override fun write(source: Buffer, byteCount: Long) {
     checkOffsetAndCount(source.size, 0, byteCount)
 
     // Hash byteCount bytes from the prefix of source.
@@ -103,7 +104,7 @@ actual class HashingSink : ForwardingSink, Sink { // Need to explicitly declare 
   @Deprecated(
     message = "moved to val",
     replaceWith = ReplaceWith(expression = "hash"),
-    level = DeprecationLevel.ERROR
+    level = DeprecationLevel.ERROR,
   )
   fun hash() = hash
 

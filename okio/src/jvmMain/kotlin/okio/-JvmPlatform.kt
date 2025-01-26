@@ -1,3 +1,4 @@
+// ktlint-disable filename
 /*
  * Copyright (C) 2018 Square, Inc.
  *
@@ -13,8 +14,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package okio
+
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock as jvmWithLock
 
 internal actual fun ByteArray.toUtf8String(): String = String(this, Charsets.UTF_8)
 
@@ -23,9 +26,11 @@ internal actual fun String.asUtf8ToByteArray(): ByteArray = toByteArray(Charsets
 // TODO remove if https://youtrack.jetbrains.com/issue/KT-20641 provides a better solution
 actual typealias ArrayIndexOutOfBoundsException = java.lang.ArrayIndexOutOfBoundsException
 
-internal actual inline fun <R> synchronized(lock: Any, block: () -> R): R {
-  return kotlin.synchronized(lock, block)
-}
+actual typealias Lock = ReentrantLock
+
+internal actual fun newLock(): Lock = ReentrantLock()
+
+actual inline fun <T> Lock.withLock(action: () -> T): T = jvmWithLock(action)
 
 actual typealias IOException = java.io.IOException
 
@@ -36,3 +41,7 @@ actual typealias EOFException = java.io.EOFException
 actual typealias FileNotFoundException = java.io.FileNotFoundException
 
 actual typealias Closeable = java.io.Closeable
+
+actual typealias Deflater = java.util.zip.Deflater
+
+actual typealias Inflater = java.util.zip.Inflater

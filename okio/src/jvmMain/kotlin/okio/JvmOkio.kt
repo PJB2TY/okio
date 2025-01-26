@@ -20,8 +20,6 @@
 
 package okio
 
-import okio.internal.ResourceFileSystem
-import org.codehaus.mojo.animal_sniffer.IgnoreJRERequirement
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
@@ -32,19 +30,20 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.file.Files
 import java.nio.file.OpenOption
+import java.nio.file.Path as NioPath
 import java.security.MessageDigest
 import java.util.logging.Level
 import java.util.logging.Logger
 import javax.crypto.Cipher
 import javax.crypto.Mac
-import java.nio.file.Path as NioPath
+import okio.internal.ResourceFileSystem
 
 /** Returns a sink that writes to `out`. */
 fun OutputStream.sink(): Sink = OutputStreamSink(this, Timeout())
 
 private class OutputStreamSink(
   private val out: OutputStream,
-  private val timeout: Timeout
+  private val timeout: Timeout,
 ) : Sink {
 
   override fun write(source: Buffer, byteCount: Long) {
@@ -81,7 +80,7 @@ fun InputStream.source(): Source = InputStreamSource(this, Timeout())
 
 private open class InputStreamSource(
   private val input: InputStream,
-  private val timeout: Timeout
+  private val timeout: Timeout,
 ) : Source {
 
   override fun read(sink: Buffer, byteCount: Long): Long {
@@ -181,15 +180,13 @@ fun File.appendingSink(): Sink = FileOutputStream(this, true).sink()
 @Throws(FileNotFoundException::class)
 fun File.source(): Source = InputStreamSource(inputStream(), Timeout.NONE)
 
-/** Returns a source that reads from `path`. */
+/** Returns a sink that writes to `path`. */
 @Throws(IOException::class)
-@IgnoreJRERequirement // Can only be invoked on Java 7+.
 fun NioPath.sink(vararg options: OpenOption): Sink =
   Files.newOutputStream(this, *options).sink()
 
-/** Returns a sink that writes to `path`. */
+/** Returns a source that reads from `path`. */
 @Throws(IOException::class)
-@IgnoreJRERequirement // Can only be invoked on Java 7+.
 fun NioPath.source(vararg options: OpenOption): Source =
   Files.newInputStream(this, *options).source()
 
@@ -226,9 +223,6 @@ fun Sink.hashingSink(digest: MessageDigest): HashingSink = HashingSink(this, dig
  * Returns a source that uses [digest] to hash [this].
  */
 fun Source.hashingSource(digest: MessageDigest): HashingSource = HashingSource(this, digest)
-
-@Throws(IOException::class)
-fun FileSystem.openZip(zipPath: Path): FileSystem = okio.internal.openZip(zipPath, this)
 
 fun ClassLoader.asResourceFileSystem(): FileSystem = ResourceFileSystem(this, indexEagerly = true)
 

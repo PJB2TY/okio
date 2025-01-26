@@ -1,11 +1,12 @@
 import com.vanniktech.maven.publish.JavadocJar.Dokka
-import com.vanniktech.maven.publish.KotlinJs
+import com.vanniktech.maven.publish.KotlinMultiplatform
 import com.vanniktech.maven.publish.MavenPublishBaseExtension
 
 plugins {
-  kotlin("js")
+  kotlin("multiplatform")
   id("org.jetbrains.dokka")
   id("com.vanniktech.maven.publish.base")
+  id("binary-compatibility-validator")
 }
 
 kotlin {
@@ -15,7 +16,6 @@ kotlin {
         kotlinOptions {
           moduleKind = "umd"
           sourceMap = true
-          metaInfo = true
         }
       }
     }
@@ -36,14 +36,14 @@ kotlin {
         optIn("kotlin.time.ExperimentalTime")
       }
     }
-    val main by getting {
+    commonMain {
       dependencies {
         implementation(projects.okio)
         // Uncomment this to generate fs.fs.module_node.kt. Use it when updating fs.kt.
         // implementation(npm("@types/node", "14.14.16", true))
       }
     }
-    val test by getting {
+    commonTest {
       dependencies {
         implementation(libs.kotlin.test)
         implementation(libs.kotlin.time)
@@ -57,6 +57,6 @@ kotlin {
 
 configure<MavenPublishBaseExtension> {
   configure(
-    KotlinJs(javadocJar = Dokka("dokkaGfm"))
+    KotlinMultiplatform(javadocJar = Dokka("dokkaGfm"))
   )
 }

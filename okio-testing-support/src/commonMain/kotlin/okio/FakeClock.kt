@@ -15,12 +15,10 @@
  */
 package okio
 
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
 import kotlin.time.Duration
 
 class FakeClock : Clock {
-  var time = Instant.parse("2021-01-01T00:00:00Z")
+  var time = fromEpochSeconds(1609459200L) // 2021-01-01T00:00:00Z
 
   override fun now() = time
 

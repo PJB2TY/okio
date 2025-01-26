@@ -1,3 +1,4 @@
+// ktlint-disable filename
 /*
  * Copyright (C) 2018 Square, Inc.
  *
@@ -13,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package okio.internal
 
 import okio.ArrayIndexOutOfBoundsException

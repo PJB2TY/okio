@@ -49,22 +49,26 @@ private class BlackholeSink : Sink {
 
 /** Execute [block] then close this. This will be closed even if [block] throws. */
 inline fun <T : Closeable?, R> T.use(block: (T) -> R): R {
-  var result: R? = null
   var thrown: Throwable? = null
 
-  try {
-    result = block(this)
+  val result = try {
+    block(this)
   } catch (t: Throwable) {
     thrown = t
-  }
-
-  try {
-    this?.close()
-  } catch (t: Throwable) {
-    if (thrown == null) thrown = t
-    else thrown.addSuppressed(t)
+    null
+  } finally {
+    try {
+      this?.close()
+    } catch (t: Throwable) {
+      if (thrown == null) {
+        thrown = t
+      } else {
+        thrown.addSuppressed(t)
+      }
+    }
   }
 
   if (thrown != null) throw thrown
-  return result!!
+  @Suppress("UNCHECKED_CAST")
+  return result as R
 }

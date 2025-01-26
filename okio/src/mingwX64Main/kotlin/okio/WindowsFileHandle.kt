@@ -39,7 +39,7 @@ import platform.windows._OVERLAPPED
 
 internal class WindowsFileHandle(
   readWrite: Boolean,
-  private val file: HANDLE?
+  private val file: HANDLE?,
 ) : FileHandle(readWrite) {
   override fun protectedSize(): Long {
     memScoped {
@@ -55,10 +55,14 @@ internal class WindowsFileHandle(
     fileOffset: Long,
     array: ByteArray,
     arrayOffset: Int,
-    byteCount: Int
+    byteCount: Int,
   ): Int {
-    val bytesRead = array.usePinned { pinned ->
-      variantPread(pinned.addressOf(arrayOffset), byteCount, fileOffset)
+    val bytesRead = if (array.isNotEmpty()) {
+      array.usePinned { pinned ->
+        variantPread(pinned.addressOf(arrayOffset), byteCount, fileOffset)
+      }
+    } else {
+      0
     }
     if (bytesRead == 0) return -1
     return bytesRead
@@ -67,7 +71,7 @@ internal class WindowsFileHandle(
   fun variantPread(
     target: CValuesRef<*>,
     byteCount: Int,
-    offset: Long
+    offset: Long,
   ): Int {
     memScoped {
       val overlapped = alloc<_OVERLAPPED>()
@@ -78,7 +82,7 @@ internal class WindowsFileHandle(
         lpBuffer = target.getPointer(this),
         nNumberOfBytesToRead = byteCount.toUInt(),
         lpNumberOfBytesRead = null,
-        lpOverlapped = overlapped.ptr
+        lpOverlapped = overlapped.ptr,
       )
       if (readFileResult == 0 && GetLastError().toInt() != ERROR_HANDLE_EOF) {
         throw lastErrorToIOException()
@@ -91,10 +95,14 @@ internal class WindowsFileHandle(
     fileOffset: Long,
     array: ByteArray,
     arrayOffset: Int,
-    byteCount: Int
+    byteCount: Int,
   ) {
-    val bytesWritten = array.usePinned { pinned ->
-      variantPwrite(pinned.addressOf(arrayOffset), byteCount, fileOffset)
+    val bytesWritten = if (array.isNotEmpty()) {
+      array.usePinned { pinned ->
+        variantPwrite(pinned.addressOf(arrayOffset), byteCount, fileOffset)
+      }
+    } else {
+      0
     }
     if (bytesWritten != byteCount) throw IOException("bytesWritten=$bytesWritten")
   }
@@ -102,7 +110,7 @@ internal class WindowsFileHandle(
   fun variantPwrite(
     source: CValuesRef<*>,
     byteCount: Int,
-    offset: Long
+    offset: Long,
   ): Int {
     memScoped {
       val overlapped = alloc<_OVERLAPPED>()
@@ -113,7 +121,7 @@ internal class WindowsFileHandle(
         lpBuffer = source.getPointer(this),
         nNumberOfBytesToWrite = byteCount.toUInt(),
         lpNumberOfBytesWritten = null,
-        lpOverlapped = overlapped.ptr
+        lpOverlapped = overlapped.ptr,
       )
       if (writeFileResult == 0) {
         throw lastErrorToIOException()
@@ -136,7 +144,7 @@ internal class WindowsFileHandle(
         hFile = file,
         lDistanceToMove = size.toInt(),
         lpDistanceToMoveHigh = distanceToMoveHigh.ptr,
-        dwMoveMethod = FILE_BEGIN
+        dwMoveMethod = FILE_BEGIN.toUInt(),
       )
       if (movePointerResult == 0U) {
         throw lastErrorToIOException()

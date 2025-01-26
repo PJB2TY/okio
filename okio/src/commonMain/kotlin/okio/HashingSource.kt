@@ -23,7 +23,8 @@ package okio
  *
  * In this example we use `HashingSource` with a [BufferedSource] to make reading
  * from the source easier.
- * ```
+ *
+ * ```java
  * HashingSource hashingSource = HashingSource.sha256(rawSource);
  * BufferedSource bufferedSource = Okio.buffer(hashingSource);
  *
@@ -41,6 +42,10 @@ expect class HashingSource : Source {
    * internal state is cleared. This starts a new hash with zero bytes supplied.
    */
   val hash: ByteString
+
+  override fun close()
+  override fun read(sink: Buffer, byteCount: Long): Long
+  override fun timeout(): Timeout
 
   companion object {
     /**

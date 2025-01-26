@@ -22,5 +22,7 @@ class NativeSystemFileSystemTest : AbstractFileSystemTest(
   fileSystem = FileSystem.SYSTEM,
   windowsLimitations = Path.DIRECTORY_SEPARATOR == "\\",
   allowClobberingEmptyDirectories = Path.DIRECTORY_SEPARATOR == "\\",
-  temporaryDirectory = FileSystem.SYSTEM_TEMPORARY_DIRECTORY
+  allowAtomicMoveFromFileToDirectory = false,
+  temporaryDirectory = FileSystem.SYSTEM_TEMPORARY_DIRECTORY,
+  closeBehavior = CloseBehavior.DoesNothing,
 )

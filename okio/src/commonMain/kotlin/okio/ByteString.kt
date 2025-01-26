@@ -16,7 +16,6 @@
 
 package okio
 
-import kotlin.jvm.JvmField
 import kotlin.jvm.JvmName
 import kotlin.jvm.JvmOverloads
 import kotlin.jvm.JvmStatic
@@ -85,6 +84,7 @@ internal constructor(data: ByteArray) : Comparable<ByteString> {
 
   /** Returns the 512-bit SHA-512 HMAC of this byte string. */
   fun hmacSha512(key: ByteString): ByteString
+
   /**
    * Returns a byte string equal to this byte string, but with the bytes 'A' through 'Z' replaced
    * with the corresponding byte in 'a' through 'z'. Returns this byte string if it contains no
@@ -115,7 +115,8 @@ internal constructor(data: ByteArray) : Comparable<ByteString> {
 
   /** Returns the number of bytes in this ByteString. */
   val size: Int
-    @JvmName("size") get
+    @JvmName("size")
+    get
 
   // Hack to work around Kotlin's limitation for using JvmName on open/override vals/funs
   internal fun getSize(): Int
@@ -181,7 +182,6 @@ internal constructor(data: ByteArray) : Comparable<ByteString> {
 
   companion object {
     /** A singleton empty `ByteString`. */
-    @JvmField
     val EMPTY: ByteString
 
     /** Returns a new byte string containing a clone of the bytes of `data`. */

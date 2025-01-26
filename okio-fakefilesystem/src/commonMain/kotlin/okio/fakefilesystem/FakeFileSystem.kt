@@ -15,6 +15,9 @@
  */
 package okio.fakefilesystem
 
+import kotlin.jvm.JvmField
+import kotlin.jvm.JvmName
+import kotlin.reflect.KClass
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import okio.ArrayIndexOutOfBoundsException
@@ -34,9 +37,6 @@ import okio.fakefilesystem.FakeFileSystem.Element.File
 import okio.fakefilesystem.FakeFileSystem.Element.Symlink
 import okio.fakefilesystem.FakeFileSystem.Operation.READ
 import okio.fakefilesystem.FakeFileSystem.Operation.WRITE
-import kotlin.jvm.JvmField
-import kotlin.jvm.JvmName
-import kotlin.reflect.KClass
 
 /**
  * A fully in-memory file system useful for testing. It includes features to support writing
@@ -59,10 +59,16 @@ import kotlin.reflect.KClass
  * Programs that do not attempt any of the above operations should work fine on both UNIX and
  * Windows systems. Relax these constraints individually or call [emulateWindows] or [emulateUnix];
  * to apply the constraints of a particular operating system.
+ *
+ * Closeable
+ * ---------
+ *
+ * This file system cannot be used after it is closed. Closing it does not close any of its open
+ * streams; those must be closed directly.
  */
 class FakeFileSystem(
   @JvmField
-  val clock: Clock = Clock.System
+  val clock: Clock = Clock.System,
 ) : FileSystem() {
 
   /** File system roots. Each element is a Directory and is created on-demand. */
@@ -70,6 +76,9 @@ class FakeFileSystem(
 
   /** Files that are currently open and need to be closed to avoid resource leaks. */
   private val openFiles = mutableListOf<OpenFile>()
+
+  /** Forbid all access after [close]. */
+  private var closed = false
 
   /**
    * An absolute path with this file system's current working directory. Relative paths will be
@@ -168,7 +177,7 @@ class FakeFileSystem(
       |expected 0 open files, but found:
       |    ${openFiles.joinToString(separator = "\n    ") { it.canonicalPath.toString() }}
       """.trimMargin(),
-      firstOpenFile.backtrace
+      firstOpenFile.backtrace,
     )
   }
 
@@ -208,15 +217,17 @@ class FakeFileSystem(
   override fun canonicalize(path: Path): Path {
     val canonicalPath = canonicalizeInternal(path)
 
-    if (lookupPath(canonicalPath)?.element == null) {
+    val lookupResult = lookupPath(canonicalPath)
+    if (lookupResult?.element == null) {
       throw FileNotFoundException("no such file: $path")
     }
 
-    return canonicalPath
+    return lookupResult.path
   }
 
   /** Don't throw [FileNotFoundException] if the path doesn't identify a file. */
   private fun canonicalizeInternal(path: Path): Path {
+    check(!closed) { "closed" }
     return workingDirectory.resolve(path, normalize = true)
   }
 
@@ -234,7 +245,7 @@ class FakeFileSystem(
     val lookupResult = lookupPath(
       canonicalPath = canonicalPath,
       createRootOnDemand = canonicalPath.isRoot,
-      resolveLastSymlink = false
+      resolveLastSymlink = false,
     )
     val element = lookupResult?.element ?: throw FileNotFoundException("no such file: $path")
     if (value == null) {
@@ -249,7 +260,7 @@ class FakeFileSystem(
     val lookupResult = lookupPath(
       canonicalPath = canonicalPath,
       createRootOnDemand = canonicalPath.isRoot,
-      resolveLastSymlink = false
+      resolveLastSymlink = false,
     )
     return lookupResult?.element?.metadata
   }
@@ -370,7 +381,7 @@ class FakeFileSystem(
     return FakeFileHandle(
       readWrite = readWrite,
       openFile = openFile,
-      file = element
+      file = element,
     )
   }
 
@@ -394,7 +405,7 @@ class FakeFileSystem(
 
   override fun atomicMove(
     source: Path,
-    target: Path
+    target: Path,
   ) {
     val canonicalSource = canonicalizeInternal(source)
     val canonicalTarget = canonicalizeInternal(target)
@@ -433,7 +444,7 @@ class FakeFileSystem(
     val lookupResult = lookupPath(
       canonicalPath = canonicalPath,
       createRootOnDemand = true,
-      resolveLastSymlink = false
+      resolveLastSymlink = false,
     )
 
     if (lookupResult?.element == null) {
@@ -460,7 +471,7 @@ class FakeFileSystem(
 
   override fun createSymlink(
     source: Path,
-    target: Path
+    target: Path,
   ) {
     val canonicalSource = canonicalizeInternal(source)
 
@@ -553,28 +564,35 @@ class FakeFileSystem(
         val symlinkLookupResult = lookupPath(
           canonicalPath = currentPath,
           recurseCount = recurseCount + 1,
-          createRootOnDemand = createRootOnDemand
+          createRootOnDemand = createRootOnDemand,
         ) ?: break
         parent = symlinkLookupResult.parent
         lastSegment = symlinkLookupResult.segment
         current = symlinkLookupResult.element ?: break
+        currentPath = symlinkLookupResult.path
       }
     }
 
     return when (segmentsTraversed) {
-      segments.size -> PathLookupResult(parent, lastSegment, current) // The file.
-      segments.size - 1 -> PathLookupResult(parent, lastSegment, null) // The enclosing directory.
+      segments.size -> {
+        PathLookupResult(currentPath, parent, lastSegment, current) // The file.
+      }
+      segments.size - 1 -> {
+        PathLookupResult(currentPath, parent, lastSegment, null) // The enclosing directory.
+      }
       else -> null // We found nothing.
     }
   }
 
   private class PathLookupResult(
+    /** The canonical path for the looked up path or its enclosing directory. */
+    val path: Path,
     /** Only null if the looked up path is a root. */
     val parent: Directory?,
     /** Only null if the looked up path is a root. */
     val segment: ByteString?,
     /** Non-null if this is a root. Also not null if this file exists. */
-    val element: Element?
+    val element: Element?,
   )
 
   private fun PathLookupResult?.requireParent(): Directory {
@@ -582,7 +600,7 @@ class FakeFileSystem(
   }
 
   private sealed class Element(
-    val createdAt: Instant
+    val createdAt: Instant,
   ) {
     var lastModifiedAt: Instant = createdAt
     var lastAccessedAt: Instant = createdAt
@@ -619,7 +637,7 @@ class FakeFileSystem(
     class Symlink(
       createdAt: Instant,
       /** This may be an absolute or relative path. */
-      val target: Path
+      val target: Path,
     ) : Element(createdAt) {
       override val metadata: FileMetadata
         get() = FileMetadata(
@@ -633,7 +651,7 @@ class FakeFileSystem(
 
     fun access(
       now: Instant,
-      modified: Boolean = false
+      modified: Boolean = false,
     ) {
       lastAccessedAt = now
       if (modified) {
@@ -646,7 +664,7 @@ class FakeFileSystem(
 
   private fun findOpenFile(
     canonicalPath: Path,
-    operation: Operation? = null
+    operation: Operation? = null,
   ): OpenFile? {
     return openFiles.firstOrNull {
       it.canonicalPath == canonicalPath && (operation == null || operation == it.operation)
@@ -656,7 +674,7 @@ class FakeFileSystem(
   private fun checkOffsetAndCount(
     size: Long,
     offset: Long,
-    byteCount: Long
+    byteCount: Long,
   ) {
     if (offset or byteCount < 0 || offset > size || size - offset < byteCount) {
       throw ArrayIndexOutOfBoundsException("size=$size offset=$offset byteCount=$byteCount")
@@ -666,18 +684,18 @@ class FakeFileSystem(
   private class OpenFile(
     val canonicalPath: Path,
     val operation: Operation,
-    val backtrace: Throwable
+    val backtrace: Throwable,
   )
 
   private enum class Operation {
     READ,
-    WRITE
+    WRITE,
   }
 
   private inner class FakeFileHandle(
     readWrite: Boolean,
     private val openFile: OpenFile,
-    private val file: File
+    private val file: File,
   ) : FileHandle(readWrite) {
     private var closed = false
 
@@ -706,7 +724,7 @@ class FakeFileSystem(
       fileOffset: Long,
       array: ByteArray,
       arrayOffset: Int,
-      byteCount: Int
+      byteCount: Int,
     ): Int {
       check(!closed) { "closed" }
       checkOffsetAndCount(array.size.toLong(), arrayOffset.toLong(), byteCount.toLong())
@@ -714,9 +732,7 @@ class FakeFileSystem(
       val fileOffsetInt = fileOffset.toInt()
       val toCopy = minOf(file.data.size - fileOffsetInt, byteCount)
       if (toCopy <= 0) return -1
-      for (i in 0 until toCopy) {
-        array[i + arrayOffset] = file.data[i + fileOffsetInt]
-      }
+      file.data.copyInto(fileOffsetInt, array, arrayOffset, toCopy)
       return toCopy
     }
 
@@ -724,7 +740,7 @@ class FakeFileSystem(
       fileOffset: Long,
       array: ByteArray,
       arrayOffset: Int,
-      byteCount: Int
+      byteCount: Int,
     ) {
       check(!closed) { "closed" }
       checkOffsetAndCount(array.size.toLong(), arrayOffset.toLong(), byteCount.toLong())
@@ -754,6 +770,10 @@ class FakeFileSystem(
     }
 
     override fun toString() = "FileHandler(${openFile.canonicalPath})"
+  }
+
+  override fun close() {
+    closed = true
   }
 
   override fun toString() = "FakeFileSystem"

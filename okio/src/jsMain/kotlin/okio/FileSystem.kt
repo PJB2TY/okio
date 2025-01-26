@@ -23,7 +23,7 @@ import okio.internal.commonExists
 import okio.internal.commonListRecursively
 import okio.internal.commonMetadata
 
-actual abstract class FileSystem {
+actual abstract class FileSystem : Closeable {
   actual abstract fun canonicalize(path: Path): Path
 
   actual fun metadata(path: Path): FileMetadata = commonMetadata(path)
@@ -44,7 +44,7 @@ actual abstract class FileSystem {
   actual abstract fun openReadWrite(
     file: Path,
     mustCreate: Boolean,
-    mustExist: Boolean
+    mustExist: Boolean,
   ): FileHandle
 
   actual abstract fun source(file: Path): Source
@@ -60,7 +60,7 @@ actual abstract class FileSystem {
   actual inline fun <T> write(
     file: Path,
     mustCreate: Boolean,
-    writerAction: BufferedSink.() -> T
+    writerAction: BufferedSink.() -> T,
   ): T {
     return sink(file, mustCreate).buffer().use {
       it.writerAction()
@@ -83,6 +83,9 @@ actual abstract class FileSystem {
     commonDeleteRecursively(fileOrDirectory, mustExist)
 
   actual abstract fun createSymlink(source: Path, target: Path)
+
+  actual override fun close() {
+  }
 
   actual companion object {
     actual val SYSTEM_TEMPORARY_DIRECTORY: Path = tmpdir.toPath()

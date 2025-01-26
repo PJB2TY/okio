@@ -22,7 +22,8 @@ package okio
  *
  * In this example we use `HashingSink` with a [BufferedSink] to make writing to the
  * sink easier.
- * ```
+ *
+ * ```java
  * HashingSink hashingSink = HashingSink.sha256(s);
  * BufferedSink bufferedSink = Okio.buffer(hashingSink);
  *
@@ -40,6 +41,11 @@ expect class HashingSink : Sink {
    * internal state is cleared. This starts a new hash with zero bytes accepted.
    */
   val hash: ByteString
+
+  override fun close()
+  override fun flush()
+  override fun timeout(): Timeout
+  override fun write(source: Buffer, byteCount: Long)
 
   companion object {
     /**

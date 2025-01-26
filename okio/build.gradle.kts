@@ -1,18 +1,19 @@
-import aQute.bnd.gradle.BundleTaskConvention
+import aQute.bnd.gradle.BundleTaskExtension
 import com.vanniktech.maven.publish.JavadocJar.Dokka
 import com.vanniktech.maven.publish.KotlinMultiplatform
 import com.vanniktech.maven.publish.MavenPublishBaseExtension
+import kotlinx.validation.ApiValidationExtension
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTargetWithTests
 import org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType
 import org.jetbrains.kotlin.gradle.plugin.mpp.TestExecutable
-import ru.vyarus.gradle.plugin.animalsniffer.AnimalSnifferExtension
 
 plugins {
   kotlin("multiplatform")
-  id("ru.vyarus.animalsniffer")
+  id("app.cash.burst")
   id("org.jetbrains.dokka")
   id("com.vanniktech.maven.publish.base")
   id("build-support")
+  id("binary-compatibility-validator")
 }
 
 /*
@@ -21,65 +22,50 @@ plugins {
  *
  * ```
  *   common
- *   |-- jvm
  *   |-- js
- *   '-- native
- *       |- unix
- *       |   |-- apple
- *       |   |   |-- iosArm64
- *       |   |   |-- iosX64
- *       |   |   |-- macosX64
- *       |   |   |-- tvosArm64
- *       |   |   |-- tvosX64
- *       |   |   |-- watchosArm32
- *       |   |   |-- watchosArm64
- *       |   |   '-- watchosX86
- *       |   '-- linux
- *       |       '-- linuxX64
- *       '-- mingw
- *           '-- mingwX64
+ *   |-- jvm
+ *   |-- native
+ *   |   |-- mingw
+ *   |   |   '-- mingwX64
+ *   |   '-- unix
+ *   |       |-- apple
+ *   |       |   |-- iosArm64
+ *   |       |   |-- iosX64
+ *   |       |   |-- macosX64
+ *   |       |   |-- tvosArm64
+ *   |       |   |-- tvosX64
+ *   |       |   |-- watchosArm32
+ *   |       |   |-- watchosArm64
+ *   |       '-- linux
+ *   |           |-- linuxX64
+ *   |           '-- linuxArm64
+ *   '-- wasm
+ *       '-- wasmJs
+ *       '-- wasmWasi
  * ```
  *
  * The `nonJvm` source set excludes that platform.
  *
  * The `hashFunctions` source set builds on all platforms. It ships as a main source set on non-JVM
  * platforms and as a test source set on the JVM platform.
+ *
+ * The `systemFileSystem` source set is used on jvm and native targets, and provides the FileSystem.SYSTEM property.
  */
 kotlin {
-  jvm {
-    withJava()
-  }
-  if (kmpJsEnabled) {
-    js {
-      compilations.all {
-        kotlinOptions {
-          moduleKind = "umd"
-          sourceMap = true
-          metaInfo = true
-        }
-      }
-      nodejs {
-        testTask {
-          useMocha {
-            timeout = "30s"
-          }
-        }
-      }
-      browser {
+  configureOrCreateOkioPlatforms()
+
+  sourceSets {
+    all {
+      languageSettings.apply {
+        // Required for CPointer etc. since Kotlin 1.9.
+        optIn("kotlinx.cinterop.ExperimentalForeignApi")
       }
     }
-  }
-  if (kmpNativeEnabled) {
-    configureOrCreateNativePlatforms()
-  }
-  sourceSets {
+
     val commonMain by getting
     val commonTest by getting {
       dependencies {
         implementation(libs.kotlin.test)
-        implementation(libs.kotlin.time)
-
-        implementation(projects.okioFakefilesystem)
         implementation(projects.okioTestingSupport)
       }
     }
@@ -92,24 +78,50 @@ kotlin {
       dependsOn(hashFunctions)
     }
 
+    val nonWasmTest by creating {
+      dependsOn(commonTest)
+      dependencies {
+        implementation(libs.kotlin.time)
+        implementation(projects.okioFakefilesystem)
+      }
+    }
+
     val nonJvmMain by creating {
       dependsOn(hashFunctions)
       dependsOn(commonMain)
     }
+
+    val systemFileSystemMain by creating {
+      dependsOn(commonMain)
+    }
+
     val nonJvmTest by creating {
       dependsOn(commonTest)
     }
 
-    val jvmMain by getting {
+    val zlibMain by creating {
+      dependsOn(commonMain)
+    }
+
+    val zlibTest by creating {
+      dependsOn(commonTest)
       dependencies {
-        compileOnly(libs.animalSniffer.annotations)
+        implementation(libs.test.assertk)
       }
     }
+
+    val jvmMain by getting {
+      dependsOn(zlibMain)
+      dependsOn(systemFileSystemMain)
+    }
     val jvmTest by getting {
-      kotlin.srcDir("src/jvmTest/hashFunctions")
+      kotlin.srcDir("src/hashFunctions")
+      dependsOn(nonWasmTest)
+      dependsOn(zlibTest)
       dependencies {
         implementation(libs.test.junit)
         implementation(libs.test.assertj)
+        implementation(libs.test.jimfs)
       }
     }
 
@@ -119,6 +131,7 @@ kotlin {
         dependsOn(nonAppleMain)
       }
       val jsTest by getting {
+        dependsOn(nonWasmTest)
         dependsOn(nonJvmTest)
       }
     }
@@ -126,6 +139,8 @@ kotlin {
     if (kmpNativeEnabled) {
       createSourceSet("nativeMain", parent = nonJvmMain)
         .also { nativeMain ->
+          nativeMain.dependsOn(zlibMain)
+          nativeMain.dependsOn(systemFileSystemMain)
           createSourceSet("mingwMain", parent = nativeMain, children = mingwTargets).also { mingwMain ->
             mingwMain.dependsOn(nonAppleMain)
           }
@@ -141,7 +156,21 @@ kotlin {
       createSourceSet("nativeTest", parent = commonTest, children = mingwTargets + linuxTargets)
         .also { nativeTest ->
           nativeTest.dependsOn(nonJvmTest)
+          nativeTest.dependsOn(nonWasmTest)
+          nativeTest.dependsOn(zlibTest)
           createSourceSet("appleTest", parent = nativeTest, children = appleTargets)
+        }
+    }
+
+    if (kmpWasmEnabled) {
+      createSourceSet("wasmMain", parent = commonMain, children = wasmTargets)
+        .also { wasmMain ->
+          wasmMain.dependsOn(nonJvmMain)
+          wasmMain.dependsOn(nonAppleMain)
+        }
+      createSourceSet("wasmTest", parent = commonTest, children = wasmTargets)
+        .also { wasmTest ->
+          wasmTest.dependsOn(nonJvmTest)
         }
     }
   }
@@ -163,34 +192,32 @@ kotlin {
 
 tasks {
   val jvmJar by getting(Jar::class) {
-    val bndConvention = BundleTaskConvention(this)
-    bndConvention.setBnd(
+    // BundleTaskExtension() crashes unless there's a 'main' source set.
+    sourceSets.create(SourceSet.MAIN_SOURCE_SET_NAME)
+    val bndExtension = BundleTaskExtension(this)
+    bndExtension.setBnd(
       """
       Export-Package: okio
       Automatic-Module-Name: okio
       Bundle-SymbolicName: com.squareup.okio
-      """
+      """,
     )
-    // Call the convention when the task has finished to modify the jar to contain OSGi metadata.
+    // Call the extension when the task has finished to modify the jar to contain OSGi metadata.
     doLast {
-      bndConvention.buildBundle()
+      bndExtension.buildAction()
+        .execute(this)
     }
   }
 }
 
-configure<AnimalSnifferExtension> {
-  sourceSets = listOf(project.sourceSets.getByName("main"))
-}
-
-val signature: Configuration by configurations
-
-dependencies {
-  signature(variantOf(libs.animalSniffer.android) { artifactType("signature") })
-  signature(variantOf(libs.animalSniffer.java) { artifactType("signature") })
-}
-
 configure<MavenPublishBaseExtension> {
   configure(
-    KotlinMultiplatform(javadocJar = Dokka("dokkaGfm"))
+    KotlinMultiplatform(javadocJar = Dokka("dokkaGfm")),
   )
+}
+
+plugins.withId("binary-compatibility-validator") {
+  configure<ApiValidationExtension> {
+    ignoredProjects += "jmh"
+  }
 }

@@ -1,19 +1,17 @@
 import com.vanniktech.maven.publish.JavadocJar.Dokka
 import com.vanniktech.maven.publish.KotlinMultiplatform
 import com.vanniktech.maven.publish.MavenPublishBaseExtension
-import ru.vyarus.gradle.plugin.animalsniffer.AnimalSnifferExtension
 
 plugins {
   kotlin("multiplatform")
-  id("ru.vyarus.animalsniffer")
   id("org.jetbrains.dokka")
   id("com.vanniktech.maven.publish.base")
+  id("binary-compatibility-validator")
   id("build-support")
 }
 
 kotlin {
   jvm {
-    withJava()
   }
   if (kmpJsEnabled) {
     js {
@@ -21,7 +19,6 @@ kotlin {
         kotlinOptions {
           moduleKind = "umd"
           sourceMap = true
-          metaInfo = true
         }
       }
       nodejs {
@@ -39,19 +36,28 @@ kotlin {
     configureOrCreateNativePlatforms()
   }
   sourceSets {
-    commonMain {
+    val commonMain by getting {
       dependencies {
         api(libs.kotlin.time)
         api(projects.okio)
       }
+    }
+    val commonTest by getting
+    if (kmpWasmEnabled) {
+      // Add support for wasmWasi when https://github.com/Kotlin/kotlinx-datetime/issues/324 is resolved.
+      configureOrCreateWasmPlatform(wasi = false)
+      createSourceSet("wasmMain", parent = commonMain, children = listOf("wasmJs"))
+      createSourceSet("wasmTest", parent = commonTest, children = listOf("wasmJs"))
     }
   }
 }
 
 tasks {
   val jvmJar by getting(Jar::class) {
-    val bndConvention = aQute.bnd.gradle.BundleTaskConvention(this)
-    bndConvention.setBnd(
+    // BundleTaskConvention() crashes unless there's a 'main' source set.
+    sourceSets.create(SourceSet.MAIN_SOURCE_SET_NAME)
+    val bndExtension = aQute.bnd.gradle.BundleTaskExtension(this)
+    bndExtension.setBnd(
       """
       Export-Package: okio.fakefilesystem
       Automatic-Module-Name: okio.fakefilesystem
@@ -60,20 +66,10 @@ tasks {
     )
     // Call the convention when the task has finished to modify the jar to contain OSGi metadata.
     doLast {
-      bndConvention.buildBundle()
+      bndExtension.buildAction()
+        .execute(this)
     }
   }
-}
-
-configure<AnimalSnifferExtension> {
-  sourceSets = listOf(project.sourceSets.getByName("main"))
-}
-
-val signature: Configuration by configurations
-
-dependencies {
-  signature(variantOf(libs.animalSniffer.android) { artifactType("signature") })
-  signature(variantOf(libs.animalSniffer.java) { artifactType("signature") })
 }
 
 configure<MavenPublishBaseExtension> {

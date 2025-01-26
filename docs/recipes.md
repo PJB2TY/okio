@@ -98,7 +98,7 @@ it will return null.
 
     ```kotlin
     @Throws(IOException::class)
-    fun readLines(file: File) {
+    fun readLines(path: Path) {
       FileSystem.SYSTEM.read(path) {
         while (true) {
           val line = readUtf8Line() ?: break
@@ -134,7 +134,7 @@ strict variant also permits a byte limit to defend against malformed input.
 
     ```kotlin
     @Throws(IOException::class)
-    fun readLines(file: File) {
+    fun readLines(path: Path) {
       FileSystem.SYSTEM.read(path) {
         while (!source.exhausted()) {
           val line = source.readUtf8LineStrict(1024)
@@ -935,7 +935,7 @@ parameters should both be 16 bytes long.
 [HashingKt]: https://github.com/square/okio/blob/master/samples/src/jvmMain/kotlin/okio/samples/Hashing.kt
 [Hashing]: https://github.com/square/okio/blob/master/samples/src/jvmMain/java/okio/samples/Hashing.java
 [ReadFileLineByLine]: https://github.com/square/okio/blob/master/samples/src/jvmMain/java/okio/samples/ReadFileLineByLine.java
-[ReadFileLineByLineKt]: https://github.com/square/okio/blob/master/samples/src/jvmMain/kotlin/okio/samples/ReadFileLineByLine.kt
+[ReadFileLineByLineKt]: https://github.com/square/okio/blob/master/samples/src/jvmMain/kotlin/okio/samples/ReadJavaIoFileLineByLine.kt
 [SocksProxyServerKt]: https://github.com/square/okio/blob/master/samples/src/jvmMain/kotlin/okio/samples/SocksProxyServer.kt
 [SocksProxyServer]: https://github.com/square/okio/blob/master/samples/src/jvmMain/java/okio/samples/SocksProxyServer.java
 [WriteFile]: https://github.com/square/okio/blob/master/samples/src/jvmMain/java/okio/samples/WriteFile.java

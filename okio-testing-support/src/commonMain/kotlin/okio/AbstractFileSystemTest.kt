@@ -15,24 +15,22 @@
  */
 package okio
 
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
-import okio.ByteString.Companion.encodeUtf8
-import okio.ByteString.Companion.toByteString
-import okio.Path.Companion.toPath
-import okio.fakefilesystem.FakeFileSystem
 import kotlin.test.BeforeTest
 import kotlin.test.Ignore
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
-import kotlin.test.assertFails
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import okio.ByteString.Companion.encodeUtf8
+import okio.ByteString.Companion.toByteString
+import okio.Path.Companion.toPath
 
 /** This test assumes that okio-files/ is the current working directory when executed. */
 abstract class AbstractFileSystemTest(
@@ -40,14 +38,19 @@ abstract class AbstractFileSystemTest(
   val fileSystem: FileSystem,
   val windowsLimitations: Boolean,
   val allowClobberingEmptyDirectories: Boolean,
-  temporaryDirectory: Path
+  val allowAtomicMoveFromFileToDirectory: Boolean,
+  val allowRenameWhenTargetIsOpen: Boolean = !windowsLimitations,
+  val closeBehavior: CloseBehavior,
+  temporaryDirectory: Path,
 ) {
   val base: Path = temporaryDirectory / "${this::class.simpleName}-${randomToken(16)}"
   private val isNodeJsFileSystem = fileSystem::class.simpleName?.startsWith("NodeJs") ?: false
+  private val isWasiFileSystem = fileSystem::class.simpleName?.startsWith("Wasi") ?: false
+  private val isWrappingJimFileSystem = this::class.simpleName?.contains("JimFileSystem") ?: false
 
   @BeforeTest
   fun setUp() {
-    fileSystem.createDirectory(base)
+    fileSystem.createDirectories(base)
   }
 
   @Test
@@ -64,18 +67,21 @@ abstract class AbstractFileSystemTest(
 
   @Test
   fun canonicalizeDotReturnsCurrentWorkingDirectory() {
-    if (fileSystem is FakeFileSystem || fileSystem is ForwardingFileSystem) return
+    if (fileSystem.isFakeFileSystem || fileSystem is ForwardingFileSystem) return
     val cwd = fileSystem.canonicalize(".".toPath())
     val cwdString = cwd.toString()
     val slash = Path.DIRECTORY_SEPARATOR
     assertTrue(cwdString) {
-      cwdString.endsWith("okio${slash}okio") ||
-        cwdString.endsWith("${slash}okio-parent-okio-js-legacy-test") ||
-        cwdString.endsWith("${slash}okio-parent-okio-js-ir-test") ||
-        cwdString.endsWith("${slash}okio-parent-okio-nodefilesystem-js-ir-test") ||
-        cwdString.endsWith("${slash}okio-parent-okio-nodefilesystem-js-legacy-test") ||
-        cwdString.contains("/CoreSimulator/Devices/") || // iOS simulator.
-        cwdString == "/" // Android emulator.
+      if (isWrappingJimFileSystem) {
+        cwdString.endsWith("work")
+      } else if (isWasiFileSystem) {
+        cwdString.endsWith("/tmp")
+      } else {
+        cwdString.endsWith("okio${slash}okio") ||
+          cwdString.endsWith("${slash}okio-parent-okio-nodefilesystem-test") ||
+          cwdString.contains("/CoreSimulator/Devices/") || // iOS simulator.
+          cwdString == "/" // Android emulator.
+      }
     }
   }
 
@@ -87,10 +93,163 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test
-  fun canonicalizeNoSuchFile() {
+  fun canonicalizeAbsolutePathNoSuchFile() {
     assertFailsWith<FileNotFoundException> {
       fileSystem.canonicalize(base / "no-such-file")
     }
+  }
+
+  @Test
+  fun canonicalizeRelativePathNoSuchFile() {
+    assertFailsWith<FileNotFoundException> {
+      fileSystem.canonicalize("no-such-file".toPath())
+    }
+  }
+
+  @Test
+  fun canonicalizeFollowsSymlinkDirectories() {
+    if (!supportsSymlink()) return
+    val base = fileSystem.canonicalize(base)
+
+    fileSystem.createDirectory(base / "real-directory")
+
+    val expected = base / "real-directory" / "real-file.txt"
+    expected.writeUtf8("hello")
+
+    fileSystem.createSymlink(base / "symlink-directory", base / "real-directory")
+
+    val canonicalPath = fileSystem.canonicalize(base / "symlink-directory" / "real-file.txt")
+    assertEquals(expected, canonicalPath)
+  }
+
+  @Test
+  fun canonicalizeFollowsSymlinkFiles() {
+    if (!supportsSymlink()) return
+    val base = fileSystem.canonicalize(base)
+
+    fileSystem.createDirectory(base / "real-directory")
+
+    val expected = base / "real-directory" / "real-file.txt"
+    expected.writeUtf8("hello")
+
+    fileSystem.createSymlink(
+      base / "real-directory" / "symlink-file.txt",
+      expected,
+    )
+
+    val canonicalPath = fileSystem.canonicalize(base / "real-directory" / "symlink-file.txt")
+    assertEquals(expected, canonicalPath)
+  }
+
+  @Test
+  fun canonicalizeFollowsMultipleDirectoriesAndMultipleFiles() {
+    if (!supportsSymlink()) return
+    val base = fileSystem.canonicalize(base)
+
+    fileSystem.createDirectory(base / "real-directory")
+
+    val expected = base / "real-directory" / "real-file.txt"
+    expected.writeUtf8("hello")
+
+    fileSystem.createSymlink(
+      base / "real-directory" / "one-symlink-file.txt",
+      expected,
+    )
+
+    fileSystem.createSymlink(
+      base / "real-directory" / "two-symlink-file.txt",
+      base / "real-directory" / "one-symlink-file.txt",
+    )
+
+    fileSystem.createSymlink(
+      base / "one-symlink-directory",
+      base / "real-directory",
+    )
+
+    fileSystem.createSymlink(
+      base / "two-symlink-directory",
+      base / "one-symlink-directory",
+    )
+
+    assertEquals(
+      expected,
+      fileSystem.canonicalize(base / "two-symlink-directory" / "two-symlink-file.txt"),
+    )
+    assertEquals(
+      expected,
+      fileSystem.canonicalize(base / "two-symlink-directory" / "one-symlink-file.txt"),
+    )
+    assertEquals(
+      expected,
+      fileSystem.canonicalize(base / "two-symlink-directory" / "real-file.txt"),
+    )
+
+    assertEquals(
+      expected,
+      fileSystem.canonicalize(base / "one-symlink-directory" / "two-symlink-file.txt"),
+    )
+    assertEquals(
+      expected,
+      fileSystem.canonicalize(base / "one-symlink-directory" / "one-symlink-file.txt"),
+    )
+    assertEquals(
+      expected,
+      fileSystem.canonicalize(base / "one-symlink-directory" / "real-file.txt"),
+    )
+
+    assertEquals(
+      expected,
+      fileSystem.canonicalize(base / "real-directory" / "two-symlink-file.txt"),
+    )
+    assertEquals(
+      expected,
+      fileSystem.canonicalize(base / "real-directory" / "one-symlink-file.txt"),
+    )
+    assertEquals(
+      expected,
+      fileSystem.canonicalize(expected),
+    )
+  }
+
+  @Test
+  fun canonicalizeReturnsDeeperPath() {
+    if (!supportsSymlink()) return
+    val base = fileSystem.canonicalize(base)
+
+    fileSystem.createDirectories(base / "a" / "b" / "c")
+
+    val expected = base / "a" / "b" / "c" / "d.txt"
+    expected.writeUtf8("hello")
+
+    fileSystem.createSymlink(
+      base / "e.txt",
+      "a".toPath() / "b" / "c" / "d.txt",
+    )
+
+    assertEquals(
+      expected,
+      fileSystem.canonicalize(base / "e.txt"),
+    )
+  }
+
+  @Test
+  fun canonicalizeReturnsShallowerPath() {
+    if (!supportsSymlink()) return
+    val base = fileSystem.canonicalize(base)
+
+    val expected = base / "a.txt"
+    expected.writeUtf8("hello")
+
+    fileSystem.createDirectories(base / "b" / "c" / "d")
+    fileSystem.createSymlink(
+      base / "b" / "c" / "d" / "e.txt",
+      "../".toPath() / ".." / ".." / "a.txt",
+    )
+
+    assertEquals(
+      expected,
+      fileSystem.canonicalize(base / "b" / "c" / "d" / "e.txt"),
+    )
   }
 
   @Test
@@ -104,10 +263,14 @@ abstract class AbstractFileSystemTest(
   @Test
   fun listOnRelativePathReturnsRelativePaths() {
     // Make sure there's always at least one file so our assertion is useful.
-    if (fileSystem is FakeFileSystem) {
+    if (fileSystem.isFakeFileSystem) {
       val workingDirectory = "/directory".toPath()
       fileSystem.createDirectory(workingDirectory)
       fileSystem.workingDirectory = workingDirectory
+      fileSystem.write("a.txt".toPath()) {
+        writeUtf8("hello, world!")
+      }
+    } else if (isWrappingJimFileSystem || isWasiFileSystem) {
       fileSystem.write("a.txt".toPath()) {
         writeUtf8("hello, world!")
       }
@@ -115,6 +278,108 @@ abstract class AbstractFileSystemTest(
 
     val entries = fileSystem.list(".".toPath())
     assertTrue(entries.toString()) { entries.isNotEmpty() && entries.all { it.isRelative } }
+  }
+
+  @Test
+  fun listOnRelativePathWhichIsNotDotReturnsRelativePaths() {
+    if (isNodeJsFileSystem) return
+
+    // Make sure there's always at least one file so our assertion is useful. We copy the first 2
+    // entries of the real working directory of the JVM to validate the results on all environment.
+    if (
+      fileSystem.isFakeFileSystem ||
+      fileSystem is ForwardingFileSystem && fileSystem.delegate.isFakeFileSystem
+    ) {
+      val workingDirectory = "/directory".toPath()
+      fileSystem.createDirectory(workingDirectory)
+      fileSystem.workingDirectory = workingDirectory
+      val apiDir = "api".toPath()
+      fileSystem.createDirectory(apiDir)
+      fileSystem.write(apiDir / "okio.api".toPath()) {
+        writeUtf8("hello, world!")
+      }
+    } else if (isWrappingJimFileSystem || isWasiFileSystem) {
+      val apiDir = "api".toPath()
+      fileSystem.createDirectory(apiDir)
+      fileSystem.write(apiDir / "okio.api".toPath()) {
+        writeUtf8("hello, world!")
+      }
+    }
+
+    try {
+      assertEquals(
+        listOf("api".toPath() / "okio.api".toPath()),
+        fileSystem.list("api".toPath()),
+        // List some entries to help debugging.
+        fileSystem.listRecursively(".".toPath()).take(5).toList().joinToString(),
+      )
+    } catch (e: Throwable) {
+      if (e !is AssertionError && e !is FileNotFoundException) { throw e }
+
+      // Non JVM environments.
+      val firstChild = fileSystem.list("Library".toPath()).first()
+      assertTrue(
+        // List some entries to help debugging.
+        fileSystem.listRecursively(".".toPath()).take(5).toList().joinToString(),
+      ) {
+        // To avoid relying too much on the environment we check that the path contains its parent
+        // once and that it's relative.
+        firstChild.isRelative &&
+          firstChild.toString().startsWith("Library") &&
+          firstChild.toString().split("Library").size == 2
+      }
+    }
+  }
+
+  @Test
+  fun listOrNullOnRelativePathWhichIsNotDotReturnsRelativePaths() {
+    if (isNodeJsFileSystem) return
+
+    // Make sure there's always at least one file so our assertion is useful. We copy the first 2
+    // entries of the real working directory of the JVM to validate the results on all environment.
+    if (
+      fileSystem.isFakeFileSystem ||
+      fileSystem is ForwardingFileSystem && fileSystem.delegate.isFakeFileSystem
+    ) {
+      val workingDirectory = "/directory".toPath()
+      fileSystem.createDirectory(workingDirectory)
+      fileSystem.workingDirectory = workingDirectory
+      val apiDir = "api".toPath()
+      fileSystem.createDirectory(apiDir)
+      fileSystem.write(apiDir / "okio.api".toPath()) {
+        writeUtf8("hello, world!")
+      }
+    } else if (isWrappingJimFileSystem) {
+      val apiDir = "api".toPath()
+      fileSystem.createDirectory(apiDir)
+      fileSystem.write(apiDir / "okio.api".toPath()) {
+        writeUtf8("hello, world!")
+      }
+    }
+
+    try {
+      assertEquals(
+        listOf("api".toPath() / "okio.api".toPath()),
+        fileSystem.listOrNull("api".toPath()),
+        // List some entries to help debugging.
+        fileSystem.listRecursively(".".toPath()).take(5).toList().joinToString(),
+      )
+    } catch (e: Throwable) {
+      if (e !is AssertionError && e !is FileNotFoundException) { throw e }
+
+      // Non JVM environments.
+      val firstChild = fileSystem.list("Library".toPath()).first()
+      assertTrue(
+        // List some entries to help debugging.
+        fileSystem.listRecursively(".".toPath()).take(5).toList().joinToString(),
+      ) {
+        // To avoid relying too much on the environment we check that the path contains its parent
+        // once and that it's relative.
+        firstChild.isRelative &&
+          firstChild.toString().startsWith("Library") &&
+          firstChild.toString().split("Library").size == 2
+      }
+    }
   }
 
   @Test
@@ -163,10 +428,14 @@ abstract class AbstractFileSystemTest(
   @Test
   fun listOrNullOnRelativePathReturnsRelativePaths() {
     // Make sure there's always at least one file so our assertion is useful.
-    if (fileSystem is FakeFileSystem) {
+    if (fileSystem.isFakeFileSystem) {
       val workingDirectory = "/directory".toPath()
       fileSystem.createDirectory(workingDirectory)
       fileSystem.workingDirectory = workingDirectory
+      fileSystem.write("a.txt".toPath()) {
+        writeUtf8("hello, world!")
+      }
+    } else if (isWrappingJimFileSystem) {
       fileSystem.write("a.txt".toPath()) {
         writeUtf8("hello, world!")
       }
@@ -646,7 +915,7 @@ abstract class AbstractFileSystemTest(
 
   @Test
   fun appendingSinkDoesNotImpactExistingFile() {
-    if (fileSystem is FakeFileSystem && !fileSystem.allowReadsWhileWriting) return
+    if (fileSystem.isFakeFileSystem && !fileSystem.allowReadsWhileWriting) return
 
     val path = base / "appending-sink-does-not-impact-existing-file"
     path.writeUtf8("hello, world!\n")
@@ -690,7 +959,7 @@ abstract class AbstractFileSystemTest(
 
   @Test
   fun fileSinkFlush() {
-    if (fileSystem is FakeFileSystem && !fileSystem.allowReadsWhileWriting) return
+    if (fileSystem.isFakeFileSystem && !fileSystem.allowReadsWhileWriting) return
 
     val path = base / "file-sink"
     val sink = fileSystem.sink(path)
@@ -863,10 +1132,16 @@ abstract class AbstractFileSystemTest(
     source.writeUtf8("hello, world!")
     val target = base / "target"
     fileSystem.createDirectory(target)
-    val exception = assertFailsWith<IOException> {
+
+    if (allowAtomicMoveFromFileToDirectory) {
       fileSystem.atomicMove(source, target)
+      assertEquals("hello, world!", target.readUtf8())
+    } else {
+      val exception = assertFailsWith<IOException> {
+        fileSystem.atomicMove(source, target)
+      }
+      assertTrue(exception !is FileNotFoundException)
     }
-    assertTrue(exception !is FileNotFoundException)
   }
 
   @Test
@@ -959,15 +1234,8 @@ abstract class AbstractFileSystemTest(
   @Test
   fun deleteFailsOnNoSuchFileIfMustExist() {
     val path = base / "no-such-file"
-    // TODO(jwilson): fix Windows to throw FileNotFoundException on deleting an absent file.
-    if (windowsLimitations) {
-      assertFailsWith<IOException> {
-        fileSystem.delete(path, mustExist = true)
-      }
-    } else {
-      assertFailsWith<FileNotFoundException> {
-        fileSystem.delete(path, mustExist = true)
-      }
+    assertFailsWith<FileNotFoundException> {
+      fileSystem.delete(path, mustExist = true)
     }
   }
 
@@ -1048,6 +1316,7 @@ abstract class AbstractFileSystemTest(
     assertTrue(path !in fileSystem.list(base))
     assertTrue((path / "file.txt") !in fileSystem.list(base))
   }
+
   @Test
   fun deleteRecursivelyNonEmptyDirectoryMustExist() {
     val path = base / "delete-recursively-non-empty-directory"
@@ -1346,10 +1615,15 @@ abstract class AbstractFileSystemTest(
     val to = base / "to.txt"
     from.writeUtf8("source file")
     to.writeUtf8("target file")
-    expectIOExceptionOnWindows {
+
+    val expectCrash = !allowRenameWhenTargetIsOpen
+    try {
       fileSystem.source(to).use {
         fileSystem.atomicMove(from, to)
       }
+      assertFalse(expectCrash)
+    } catch (_: IOException) {
+      assertTrue(expectCrash)
     }
   }
 
@@ -1374,8 +1648,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleWriteAndRead() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-write-and-read"
     fileSystem.openReadWrite(path).use { handle ->
 
@@ -1391,8 +1663,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleWriteAndOverwrite() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-write-and-overwrite"
     fileSystem.openReadWrite(path).use { handle ->
 
@@ -1411,8 +1681,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleWriteBeyondEnd() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-write-beyond-end"
     fileSystem.openReadWrite(path).use { handle ->
 
@@ -1428,8 +1696,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleResizeSmaller() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-resize-smaller"
     fileSystem.openReadWrite(path).use { handle ->
 
@@ -1446,8 +1712,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleResizeLarger() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-resize-larger"
     fileSystem.openReadWrite(path).use { handle ->
 
@@ -1465,7 +1729,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleFlush() {
-    if (!supportsFileHandle()) return
     if (windowsLimitations) return // Open for reading and writing simultaneously.
 
     val path = base / "file-handle-flush"
@@ -1484,7 +1747,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleLargeBufferedWriteAndRead() {
-    if (!supportsFileHandle()) return
     if (isBrowser()) return // This test errors on browsers in CI.
 
     val data = randomBytes(1024 * 1024 * 8)
@@ -1504,7 +1766,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleLargeArrayWriteAndRead() {
-    if (!supportsFileHandle()) return
     if (isBrowser()) return // This test errors on browsers in CI.
 
     val path = base / "file-handle-large-array-write-and-read"
@@ -1523,9 +1784,24 @@ abstract class AbstractFileSystemTest(
     assertEquals(writtenBytes, readBytes)
   }
 
-  @Test fun fileHandleSinkPosition() {
-    if (!supportsFileHandle()) return
+  @Test fun fileHandleEmptyArrayWriteAndRead() {
+    val path = base / "file-handle-empty-array-write-and-read"
 
+    val writtenBytes = ByteArray(0)
+    fileSystem.openReadWrite(path).use { handle ->
+      handle.write(0, writtenBytes, 0, writtenBytes.size)
+    }
+
+    val readBytes = fileSystem.openReadWrite(path).use { handle ->
+      val byteArray = ByteArray(writtenBytes.size)
+      handle.read(0, byteArray, 0, byteArray.size)
+      return@use byteArray
+    }
+
+    assertContentEquals(writtenBytes, readBytes)
+  }
+
+  @Test fun fileHandleSinkPosition() {
     val path = base / "file-handle-sink-position"
 
     fileSystem.openReadWrite(path).use { handle ->
@@ -1546,8 +1822,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleBufferedSinkPosition() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-buffered-sink-position"
 
     fileSystem.openReadWrite(path).use { handle ->
@@ -1568,8 +1842,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleSinkReposition() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-sink-reposition"
 
     fileSystem.openReadWrite(path).use { handle ->
@@ -1601,8 +1873,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleBufferedSinkReposition() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-buffered-sink-reposition"
 
     fileSystem.openReadWrite(path).use { handle ->
@@ -1634,8 +1904,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleSourceHappyPath() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-source"
     fileSystem.write(path) {
       writeUtf8("abcdefghijklmnop")
@@ -1669,8 +1937,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleSourceReposition() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-source-reposition"
     fileSystem.write(path) {
       writeUtf8("abcdefghijklmnop")
@@ -1711,8 +1977,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleBufferedSourceReposition() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-buffered-source-reposition"
     fileSystem.write(path) {
       writeUtf8("abcdefghijklmnop")
@@ -1761,8 +2025,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun fileHandleSourceSeekBackwards() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-source-backwards"
     fileSystem.write(path) {
       writeUtf8("abcdefghijklmnop")
@@ -1788,8 +2050,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun bufferedFileHandleSourceHappyPath() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-source"
     fileSystem.write(path) {
       writeUtf8("abcdefghijklmnop")
@@ -1823,8 +2083,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun bufferedFileHandleSourceSeekBackwards() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-source-backwards"
     fileSystem.write(path) {
       writeUtf8("abcdefghijklmnop")
@@ -1850,8 +2108,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun openReadOnlyThrowsOnAttemptToWrite() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-source"
     fileSystem.write(path) {
       writeUtf8("abcdefghijklmnop")
@@ -1885,8 +2141,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun openReadOnlyFailsOnAbsentFile() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-source"
 
     try {
@@ -1897,8 +2151,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun openReadWriteCreatesAbsentFile() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-source"
 
     fileSystem.openReadWrite(path).use {
@@ -1908,8 +2160,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun openReadWriteCreatesAbsentFileMustCreate() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-source"
 
     fileSystem.openReadWrite(path, mustCreate = true).use {
@@ -1919,7 +2169,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun openReadWriteMustCreateThrowsIfAlreadyExists() {
-    if (!supportsFileHandle()) return
     val path = base / "file-handle-source"
     path.writeUtf8("First!")
 
@@ -1929,8 +2178,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun openReadWriteMustExist() {
-    if (!supportsFileHandle()) return
-
     val path = base / "file-handle-source"
     path.writeUtf8("one")
 
@@ -1942,7 +2189,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun openReadWriteMustExistThrowsIfAbsent() {
-    if (!supportsFileHandle()) return
     val path = base / "file-handle-source"
 
     assertFailsWith<IOException> {
@@ -1951,7 +2197,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun openReadWriteThrowsIfBothMustCreateAndMustExist() {
-    if (!supportsFileHandle()) return
     val path = base / "file-handle-source"
 
     assertFailsWith<IllegalArgumentException> {
@@ -1960,8 +2205,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun sinkPositionFailsAfterClose() {
-    if (!supportsFileHandle()) return
-
     val path = base / "sink-position-fails-after-close"
 
     fileSystem.openReadWrite(path).use { handle ->
@@ -1981,8 +2224,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun sinkRepositionFailsAfterClose() {
-    if (!supportsFileHandle()) return
-
     val path = base / "sink-reposition-fails-after-close"
 
     fileSystem.openReadWrite(path).use { handle ->
@@ -2002,8 +2243,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun sourcePositionFailsAfterClose() {
-    if (!supportsFileHandle()) return
-
     val path = base / "source-position-fails-after-close"
 
     fileSystem.openReadWrite(path).use { handle ->
@@ -2023,8 +2262,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun sourceRepositionFailsAfterClose() {
-    if (!supportsFileHandle()) return
-
     val path = base / "source-reposition-fails-after-close"
 
     fileSystem.openReadWrite(path).use { handle ->
@@ -2044,8 +2281,6 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test fun sizeFailsAfterClose() {
-    if (!supportsFileHandle()) return
-
     val path = base / "size-fails-after-close"
 
     val handle = fileSystem.openReadWrite(path)
@@ -2058,10 +2293,33 @@ abstract class AbstractFileSystemTest(
   }
 
   @Test
-  fun symlinkMetadata() {
+  fun absoluteSymlinkMetadata() {
     if (!supportsSymlink()) return
 
     val target = base / "symlink-target"
+    val source = base / "symlink-source"
+
+    val minTime = clock.now()
+    fileSystem.createSymlink(source, target)
+    val maxTime = clock.now()
+
+    val sourceMetadata = fileSystem.metadata(source)
+    // Okio's WasiFileSystem only creates relative symlinks.
+    assertEquals(
+      when {
+        isWasiFileSystem -> target.relativeTo(source.parent!!)
+        else -> target
+      },
+      sourceMetadata.symlinkTarget,
+    )
+    assertInRange(sourceMetadata.createdAt, minTime, maxTime)
+  }
+
+  @Test
+  fun relativeSymlinkMetadata() {
+    if (!supportsSymlink()) return
+
+    val target = "symlink-target".toPath()
     val source = base / "symlink-source"
 
     val minTime = clock.now()
@@ -2113,6 +2371,7 @@ abstract class AbstractFileSystemTest(
   @Test
   fun openSymlinkSink() {
     if (!supportsSymlink()) return
+    if (isJimFileSystem()) return
 
     val target = base / "symlink-target"
     val source = base / "symlink-source"
@@ -2226,7 +2485,14 @@ abstract class AbstractFileSystemTest(
     fileSystem.atomicMove(source1, source2)
     assertEquals("I am the target file", target.readUtf8())
     assertEquals("I am the target file", source2.readUtf8())
-    assertEquals(target, fileSystem.metadata(source2).symlinkTarget)
+    // Okio's WasiFileSystem only creates relative symlinks.
+    assertEquals(
+      when {
+        isWasiFileSystem -> target.relativeTo(source1.parent!!)
+        else -> target
+      },
+      fileSystem.metadata(source2).symlinkTarget,
+    )
   }
 
   @Test
@@ -2288,44 +2554,123 @@ abstract class AbstractFileSystemTest(
     }
   }
 
-  private fun assertClosedFailure(block: () -> Unit) {
-    val exception = assertFails {
-      block()
+  @Test
+  fun readAfterFileSystemClose() {
+    val path = base / "file"
+
+    path.writeUtf8("hello, world!")
+
+    when (closeBehavior) {
+      CloseBehavior.Closes -> {
+        fileSystem.close()
+
+        assertFailsWith<IllegalStateException> {
+          fileSystem.canonicalize(path)
+        }
+        assertFailsWith<IllegalStateException> {
+          fileSystem.exists(path)
+        }
+        assertFailsWith<IllegalStateException> {
+          fileSystem.metadata(path)
+        }
+        assertFailsWith<IllegalStateException> {
+          fileSystem.openReadOnly(path)
+        }
+        assertFailsWith<IllegalStateException> {
+          fileSystem.source(path)
+        }
+      }
+
+      CloseBehavior.DoesNothing -> {
+        fileSystem.close()
+        fileSystem.canonicalize(path)
+        fileSystem.exists(path)
+        fileSystem.metadata(path)
+        fileSystem.openReadOnly(path).use {
+        }
+        fileSystem.source(path).use {
+        }
+      }
+
+      CloseBehavior.Unsupported -> {
+        assertFailsWith<UnsupportedOperationException> {
+          fileSystem.close()
+        }
+      }
     }
-    val exceptionType = exception::class.simpleName
-    assertTrue(
-      exceptionType == "IOException" ||
-        exceptionType == "IllegalStateException" ||
-        exceptionType == "ClosedChannelException",
-      "unexpected exception: $exception"
-    )
   }
 
-  private fun supportsFileHandle(): Boolean {
-    return when (fileSystem::class.simpleName) {
-      "FakeFileSystem",
-      "JvmSystemFileSystem",
-      "NioSystemFileSystem",
-      "PosixFileSystem",
-      "NodeJsFileSystem" -> true
-      else -> false
+  @Test
+  fun writeAfterFileSystemClose() {
+    val path = base / "file"
+
+    when (closeBehavior) {
+      CloseBehavior.Closes -> {
+        fileSystem.close()
+
+        assertFailsWith<IllegalStateException> {
+          fileSystem.appendingSink(path)
+        }
+        assertFailsWith<IllegalStateException> {
+          fileSystem.atomicMove(path, base / "file2")
+        }
+        assertFailsWith<IllegalStateException> {
+          fileSystem.createDirectory(base / "directory")
+        }
+        assertFailsWith<IllegalStateException> {
+          fileSystem.delete(path)
+        }
+        assertFailsWith<IllegalStateException> {
+          fileSystem.openReadWrite(path)
+        }
+        assertFailsWith<IllegalStateException> {
+          fileSystem.sink(path)
+        }
+        if (supportsSymlink()) {
+          assertFailsWith<IllegalStateException> {
+            fileSystem.createSymlink(base / "symlink", base)
+          }
+        }
+      }
+
+      CloseBehavior.DoesNothing -> {
+        fileSystem.close()
+
+        fileSystem.appendingSink(path).use {
+        }
+        fileSystem.atomicMove(path, base / "file2")
+        fileSystem.createDirectory(base / "directory")
+        fileSystem.delete(path)
+        fileSystem.sink(path).use {
+        }
+        fileSystem.openReadWrite(path).use {
+        }
+        if (supportsSymlink()) {
+          fileSystem.createSymlink(base / "symlink", base)
+        }
+      }
+
+      CloseBehavior.Unsupported -> {
+        assertFailsWith<UnsupportedOperationException> {
+          fileSystem.close()
+        }
+      }
     }
   }
 
   protected fun supportsSymlink(): Boolean {
-    if (fileSystem is FakeFileSystem) return fileSystem.allowSymlinks
+    if (fileSystem.isFakeFileSystem) return fileSystem.allowSymlinks
     if (windowsLimitations) return false
     return when (fileSystem::class.simpleName) {
-      "NodeJsFileSystem",
-      "PosixFileSystem",
-      "NioSystemFileSystem" -> true
-      else -> false
+      "JvmSystemFileSystem",
+      -> false
+      else -> true
     }
   }
 
   private fun expectIOExceptionOnWindows(
     exceptJs: Boolean = false,
-    block: () -> Unit
+    block: () -> Unit,
   ) {
     val expectCrash = windowsLimitations && (!isNodeJsFileSystem || !exceptJs)
     try {
@@ -2356,9 +2701,13 @@ abstract class AbstractFileSystemTest(
    * Returns the earliest file system time that could be recorded for an event occurring at this
    * instant. This truncates fractional seconds because most host file systems do not use precise
    * timestamps for file metadata.
+   *
+   * It also pads the result by 200 milliseconds because the host and file system may use different
+   * clocks, allowing the time on the CPU to drift ahead of the time on the file system.
    */
   private fun Instant.minFileSystemTime(): Instant {
-    return Instant.fromEpochSeconds(epochSeconds)
+    val paddedInstant = minus(200.milliseconds)
+    return fromEpochSeconds(paddedInstant.epochSeconds)
   }
 
   /**
@@ -2366,10 +2715,14 @@ abstract class AbstractFileSystemTest(
    * instant. This adds 2 seconds and truncates fractional seconds because file systems may defer
    * assigning the timestamp.
    *
+   * It also pads the result by 200 milliseconds because the host and file system may use different
+   * clocks, allowing the time on the CPU to drift behind the time on the file system.
+   *
    * https://docs.microsoft.com/en-us/windows/win32/sysinfo/file-times
    */
   private fun Instant.maxFileSystemTime(): Instant {
-    return Instant.fromEpochSeconds(plus(2.seconds).epochSeconds)
+    val paddedInstant = plus(200.milliseconds)
+    return fromEpochSeconds(paddedInstant.plus(2.seconds).epochSeconds)
   }
 
   /**
@@ -2391,6 +2744,10 @@ abstract class AbstractFileSystemTest(
 
   private fun isJvmFileSystemOnWindows(): Boolean {
     return windowsLimitations && fileSystem::class.simpleName == "JvmSystemFileSystem"
+  }
+
+  private fun isJimFileSystem(): Boolean {
+    return "JimfsFileSystem" in fileSystem.toString()
   }
 
   private fun isNodeJsFileSystemOnWindows(): Boolean {

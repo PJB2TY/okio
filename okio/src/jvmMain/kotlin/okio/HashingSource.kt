@@ -29,7 +29,8 @@ import javax.crypto.spec.SecretKeySpec
  *
  * In this example we use `HashingSource` with a [BufferedSource] to make reading
  * from the source easier.
- * ```
+ *
+ * ```java
  * HashingSource hashingSource = HashingSource.sha256(rawSource);
  * BufferedSource bufferedSource = Okio.buffer(hashingSource);
  *
@@ -62,11 +63,11 @@ actual class HashingSource : ForwardingSource, Source { // Need to explicitly de
       }
     } catch (e: InvalidKeyException) {
       throw IllegalArgumentException(e)
-    }
+    },
   )
 
   @Throws(IOException::class)
-  override fun read(sink: Buffer, byteCount: Long): Long {
+  actual override fun read(sink: Buffer, byteCount: Long): Long {
     val result = super.read(sink, byteCount)
 
     if (result != -1L) {
@@ -114,7 +115,7 @@ actual class HashingSource : ForwardingSource, Source { // Need to explicitly de
   @Deprecated(
     message = "moved to val",
     replaceWith = ReplaceWith(expression = "hash"),
-    level = DeprecationLevel.ERROR
+    level = DeprecationLevel.ERROR,
   )
   fun hash() = hash
 

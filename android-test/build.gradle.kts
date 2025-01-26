@@ -1,3 +1,6 @@
+import com.android.build.gradle.internal.lint.AndroidLintAnalysisTask
+import com.android.build.gradle.internal.lint.AndroidLintTask
+
 plugins {
   id("com.android.library")
   id("org.jetbrains.kotlin.android")
@@ -16,6 +19,8 @@ val isIDE = properties.containsKey("android.injected.invoked.from.ide") ||
   System.getenv("IDEA_INITIAL_DIRECTORY") != null
 
 android {
+  namespace = "com.squareup.okio"
+
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_1_8
     targetCompatibility = JavaVersion.VERSION_1_8
@@ -26,13 +31,11 @@ android {
     freeCompilerArgs += "-Xmulti-platform"
   }
 
-  compileSdkVersion(30)
+  compileSdkVersion(33)
 
   defaultConfig {
     minSdkVersion(15)
-    targetSdkVersion(30)
-    versionCode = 1
-    versionName = "1.0"
+    targetSdkVersion(33)
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
     // AndroidJUnitRunner wasn't finding tests in multidex artifacts when running on Android 4.0.3.
@@ -60,11 +63,15 @@ android {
   }
 }
 
+// https://issuetracker.google.com/issues/325146674
+tasks.withType<AndroidLintAnalysisTask> {
+  onlyIf { false }
+}
+
 dependencies {
   coreLibraryDesugaring(libs.android.desugar.jdk.libs)
   androidTestImplementation(libs.androidx.test.ext.junit)
   androidTestImplementation(libs.androidx.test.runner)
-  androidTestImplementation(libs.animalSniffer.annotations)
   androidTestImplementation(libs.kotlin.test)
   androidTestImplementation(libs.kotlin.time)
   androidTestImplementation(libs.test.assertj)

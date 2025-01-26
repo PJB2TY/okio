@@ -74,13 +74,25 @@ package okio
  * directory or could not be listed. This class always throws an [IOException] when an operation
  * doesn't succeed.
  *
- * The `java.nio.Path` and `java.nio.Files` classes are the entry points of Java's new file system
+ * The `java.nio.file.Path` and `java.nio.file.Files` classes are the entry points of Java's new file system
  * API. Each `Path` instance is scoped to a particular file system, though that is often implicit
  * because the `Paths.get()` function automatically uses the default (ie. system) file system.
  * In Okio's API paths are just identifiers; you must use a specific `FileSystem` object to do
  * I/O with.
+ *
+ * Closeable
+ * ---------
+ *
+ * Implementations of this interface may need to be closed to release resources.
+ *
+ * It is the file system implementor's responsibility to document whether a file system instance
+ * must be closed, and what happens to its open streams when the file system is closed. For example,
+ * the Java NIO FileSystem closes all of its open streams when the file system is closed.
+ *
+ * The built-in `FileSystem.SYSTEM` implementation does not need to be closed and closing it has no
+ * effect.
  */
-expect abstract class FileSystem() {
+expect abstract class FileSystem() : Closeable {
 
   /**
    * Resolves [path] against the current working directory and symlinks in this file system. The
@@ -193,7 +205,7 @@ expect abstract class FileSystem() {
   abstract fun openReadWrite(
     file: Path,
     mustCreate: Boolean = false,
-    mustExist: Boolean = false
+    mustExist: Boolean = false,
   ): FileHandle
 
   /**
@@ -238,7 +250,7 @@ expect abstract class FileSystem() {
   inline fun <T> write(
     file: Path,
     mustCreate: Boolean = false,
-    writerAction: BufferedSink.() -> T
+    writerAction: BufferedSink.() -> T,
   ): T
 
   /**
@@ -375,6 +387,9 @@ expect abstract class FileSystem() {
    */
   @Throws(IOException::class)
   abstract fun createSymlink(source: Path, target: Path)
+
+  @Throws(IOException::class)
+  override fun close()
 
   companion object {
     /**
